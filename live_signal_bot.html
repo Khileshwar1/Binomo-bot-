@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Live Signal Bot</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#071522;color:#fff;font-family:Arial,sans-serif}
+.container{max-width:560px;margin:auto;padding:14px}
+.card{background:#0d2030;border:1px solid #193449;border-radius:14px;padding:16px;margin-bottom:12px}
+h2{margin:0 0 12px}
+label{display:block;color:#9eb0bf;font-size:13px;margin-bottom:6px}
+select,input{width:100%;background:#071522;color:#fff;border:1px solid #294356;border-radius:10px;padding:12px;font-size:16px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.price{font-size:30px;font-weight:bold;margin:12px 0}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.stat{background:#142b3c;border-radius:9px;padding:10px;text-align:center}
+.stat small{display:block;color:#9eb0bf;margin-bottom:4px}
+.signal{margin-top:14px;padding:16px;text-align:center;border-radius:10px;font-size:22px;font-weight:bold}
+.wait{background:#26313a;color:#c8d0d6}.buy{background:#087a50}.sell{background:#a62d3d}
+.status{font-size:13px;color:#9eb0bf;margin-top:8px}
+.log{height:180px;overflow:auto;background:#02070b;border-radius:8px;padding:10px;font:12px monospace}
+button{width:100%;border:0;border-radius:10px;padding:12px;background:#10aee3;color:#fff;font-size:16px;font-weight:bold}
+.note{font-size:12px;color:#9eb0bf;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h2>🤖 Live Signal Bot</h2>
+    <label>Search / Select Asset</label>
+    <input id="search" placeholder="जैसे USD/JPY, GOLD, BTC..." oninput="filterPairs()">
+    <select id="pair" size="1" onchange="selectPair()"></select>
+  </div>
+
+  <div class="card">
+    <div id="pairTitle"><b>BTC/USDT</b></div>
+    <div class="price" id="price">--</div>
+    <div class="stats">
+      <div class="stat"><small>RSI 14</small><b id="rsi">--</b></div>
+      <div class="stat"><small>SMA 20</small><b id="sma20">--</b></div>
+      <div class="stat"><small>SMA 40</small><b id="sma40">--</b></div>
+    </div>
+    <div id="signal" class="signal wait">⏳ WAIT</div>
+    <div id="status" class="status">Connecting...</div>
+  </div>
+
+  <div class="card">
+    <h3>📋 Signal History</h3>
+    <div id="log" class="log"></div>
+  </div>
+
+  <div class="card note">
+    <b>Data-source note:</b> Binance WebSocket केवल Binance के उपलब्ध market pairs का live data देता है।
+    Screenshot में दिखने वाले OTC pairs (जैसे USD/JPY OTC, GOLD OTC, APPLE OTC) का वास्तविक broker OTC feed
+    Binance से नहीं मिलता। इसलिए उनके लिए broker/API WebSocket जोड़ना आवश्यक है। यह page OTC price को fake नहीं बनाएगा।
+  </div>
+</div>
+
+<script>
+const PAIRS = [
+  {name:"BTC/USDT", type:"binance", symbol:"btcusdt"},
+  {name:"ETH/USDT", type:"binance", symbol:"ethusdt"},
+  {name:"BNB/USDT", type:"binance", symbol:"bnbusdt"},
+  {name:"SOL/USDT", type:"binance", symbol:"solusdt"},
+  {name:"XRP/USDT", type:"binance", symbol:"xrpusdt"},
+
+  {name:"USD/JPY (OTC)", type:"otc"},
+  {name:"NZD/JPY (OTC)", type:"otc"},
+  {name:"GBP/USD (OTC)", type:"otc"},
+  {name:"USD/CHF (OTC)", type:"otc"},
+  {name:"AUD/NZD (OTC)", type:"otc"},
+  {name:"EUR/GBP (OTC)", type:"otc"},
+  {name:"EUR/USD (OTC)", type:"otc"},
+  {name:"GOLD (OTC)", type:"otc"},
+  {name:"AMAZON (OTC)", type:"otc"},
+  {name:"APPLE (OTC)", type:"otc"},
+  {name:"TESLA (OTC)", type:"otc"},
+  {name:"GOOGLE (OTC)", type:"otc"},
+  {name:"BIN IDX", type:"otc"},
+  {name:"IMX", type:"otc"},
+  {name:"PMX", type:"otc"},
+  {name:"ASIA", type:"otc"}
+];
+
+let ws=null, prices=[], selected=null;
+
+const $=id=>document.getElementById(id);
+
+function renderPairs(list=PAIRS){
+  $("pair").innerHTML="";
+  list.forEach(p=>{
+    const o=document.createElement("option");
+    o.value=p.name;o.textContent=p.name;
+    $("pair").appendChild(o);
+  });
+}
+function filterPairs(){
+  const q=$("search").value.toLowerCase();
+  renderPairs(PAIRS.filter(p=>p.name.toLowerCase().includes(q)));
+}
+function selectPair(){
+  const p=PAIRS.find(x=>x.name===$("pair").value);
+  if(!p)return;
+  selected=p;
+  prices=[];
+  $("pairTitle").innerHTML="<b>"+p.name+"</b>";
+  $("price").textContent="--";
+  $("rsi").textContent="--"; $("sma20").textContent="--"; $("sma40").textContent="--";
+  setSignal("⏳ WAIT","wait");
+  if(ws){ws.close();ws=null}
+  if(p.type==="binance") connectBinance(p);
+  else {
+    $("status").textContent="OTC feed connected नहीं है — broker WebSocket/API आवश्यक है.";
+    addLog("⚠ "+p.name+" : real OTC feed unavailable in this demo");
+  }
+}
+function connectBinance(p){
+  $("status").textContent="Connecting to Binance 1m feed...";
+  ws=new WebSocket("wss://stream.binance.com:9443/ws/"+p.symbol+"@kline_1m");
+
+  ws.onopen=()=>{$("status").textContent="🟢 Live Binance WebSocket connected";addLog("Connected: "+p.name)};
+  ws.onmessage=e=>{
+    const m=JSON.parse(e.data), k=m.k;
+    const price=Number(k.c);
+    $("price").textContent="$"+price.toLocaleString(undefined,{maximumFractionDigits:8});
+    if(k.x){
+      prices.push(price);
+      if(prices.length>200)prices.shift();
+      updateIndicators();
+    }
+  };
+  ws.onerror=()=>{$("status").textContent="🔴 WebSocket error"};
+  ws.onclose=()=>{$("status").textContent="🟠 Connection closed"};
+}
+function sma(arr,n){
+  if(arr.length<n)return null;
+  return arr.slice(-n).reduce((a,b)=>a+b,0)/n;
+}
+function rsi(arr,n=14){
+  if(arr.length<n+1)return null;
+  let gain=0,loss=0;
+  for(let i=arr.length-n;i<arr.length;i++){
+    const d=arr[i]-arr[i-1];
+    if(d>0)gain+=d; else loss-=d;
+  }
+  if(loss===0)return 100;
+  return 100-(100/(1+(gain/n)/(loss/n)));
+}
+function updateIndicators(){
+  const r=rsi(prices), a=sma(prices,20), b=sma(prices,40);
+  $("rsi").textContent=r===null?"--":r.toFixed(2);
+  $("sma20").textContent=a===null?"--":a.toFixed(4);
+  $("sma40").textContent=b===null?"--":b.toFixed(4);
+
+  if(r===null || a===null || b===null){
+    setSignal("⏳ DATA COLLECTING","wait");
+    return;
+  }
+
+  // Educational signal logic: trend + RSI confirmation.
+  if(a>b && r<70 && r>50) {
+    setSignal("🟢 BUY / CALL","buy");
+    addLog("BUY/CALL | RSI "+r.toFixed(2)+" | SMA20 > SMA40");
+  } else if(a<b && r>30 && r<50) {
+    setSignal("🔴 SELL / PUT","sell");
+    addLog("SELL/PUT | RSI "+r.toFixed(2)+" | SMA20 < SMA40");
+  } else {
+    setSignal("⏳ WAIT","wait");
+  }
+}
+function setSignal(text,cls){
+  $("signal").textContent=text;
+  $("signal").className="signal "+cls;
+}
+function addLog(msg){
+  const t=new Date().toLocaleTimeString();
+  $("log").innerHTML+="["+t+"] "+msg+"<br>";
+  $("log").scrollTop=$("log").scrollHeight;
+}
+
+renderPairs();
+$("pair").value="BTC/USDT";
+selectPair();
+</script>
+</body>
+</html>
